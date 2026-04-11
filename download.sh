@@ -3,7 +3,7 @@
 set -e
 
 download(){
- wget -N --continue -P./binaries/ $*
+  wget -N -P./binaries/ "$1"
 }
 
 echo "Downloading binaries..."
