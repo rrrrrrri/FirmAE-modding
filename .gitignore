@@ -9,3 +9,7 @@ scratch/
 *binwalk*
 result.txt
 chromedriver
+
+# Required local runtime binaries are part of this fork.
+!binaries/
+!binaries/**
