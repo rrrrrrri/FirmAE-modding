@@ -11,12 +11,19 @@ import hashlib
 import multiprocessing
 import os
 import shutil
+import sys
 import tempfile
 import traceback
 import pathlib
 
 import magic
 import binwalk
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts import util as firmware_store
 
 class Extractor(object):
     """
@@ -52,8 +59,8 @@ class Extractor(object):
         # Brand of the firmware
         self.brand = brand
 
-        # Hostname of SQL server
-        self.database = server
+        # Kept for CLI compatibility; FirmAE now stores transient metadata in scratch.
+        self.metadata_store = None
 
         self.debug = debug
 
@@ -218,7 +225,6 @@ class ExtractionItem(object):
     # Maximum recursion breadth and depth
     RECURSION_BREADTH = 10
     RECURSION_DEPTH = 3
-    database = None
 
     def __init__(self, extractor, path, depth, tag=None, debug=False):
         # Temporary directory
@@ -234,14 +240,6 @@ class ExtractionItem(object):
         self.item = path
 
         self.debug = debug
-
-        # Database connection
-        if self.extractor.database:
-            import psycopg2
-            self.database = psycopg2.connect(database="firmware",
-                                             user="firmadyne",
-                                             password="firmadyne",
-                                             host=self.extractor.database)
 
         # Checksum
         self.checksum = Extractor.io_md5(path)
@@ -259,9 +257,6 @@ class ExtractionItem(object):
         self.update_status()
 
     def __del__(self):
-        if self.database:
-            self.database.close()
-
         if self.temp:
             self.printf(">> Cleaning up %s..." % self.temp)
             Extractor.io_rm(self.temp)
@@ -278,45 +273,9 @@ class ExtractionItem(object):
         """
         Generate the filename tag.
         """
-        if not self.database:
-            return os.path.basename(self.item) + "_" + self.checksum
-
-        try:
-            image_id = None
-            cur = self.database.cursor()
-            if self.extractor.brand:
-                brand = self.extractor.brand
-            else:
-                brand = os.path.relpath(self.item).split(os.path.sep)[0]
-            cur.execute("SELECT id FROM brand WHERE name=%s", (brand, ))
-            brand_id = cur.fetchone()
-            if not brand_id:
-                cur.execute("INSERT INTO brand (name) VALUES (%s) RETURNING id",
-                            (brand, ))
-                brand_id = cur.fetchone()
-            if brand_id:
-                cur.execute("SELECT id FROM image WHERE hash=%s",
-                            (self.checksum, ))
-                image_id = cur.fetchone()
-                if not image_id:
-                    cur.execute("INSERT INTO image (filename, brand_id, hash) \
-                                VALUES (%s, %s, %s) RETURNING id",
-                                (os.path.basename(self.item), brand_id[0],
-                                 self.checksum))
-                    image_id = cur.fetchone()
-            self.database.commit()
-        except BaseException:
-            traceback.print_exc()
-            self.database.rollback()
-        finally:
-            if cur:
-                cur.close()
-
-        if image_id:
-            self.printf(">> Database Image ID: %s" % image_id[0])
-
-        return str(image_id[0]) if \
-               image_id else os.path.basename(self.item) + "_" + self.checksum
+        image_id = firmware_store.record_image(self.item, self.extractor.brand)
+        self.printf(">> Image ID: %s" % image_id)
+        return image_id
 
     def get_kernel_status(self):
         """
@@ -346,33 +305,20 @@ class ExtractionItem(object):
         self.extractor.kernel_done = kernel_done
         self.extractor.rootfs_done = rootfs_done
 
-        if self.database and kernel_done and self.extractor.do_kernel:
-            self.update_database("kernel_extracted", "True")
+        if kernel_done and self.extractor.do_kernel:
+            self.update_metadata("kernel_extracted", True)
 
-        if self.database and rootfs_done and self.extractor.do_rootfs:
-            self.update_database("rootfs_extracted", "True")
+        if rootfs_done and self.extractor.do_rootfs:
+            self.update_metadata("rootfs_extracted", True)
 
         return self.get_status()
 
-    def update_database(self, field, value):
+    def update_metadata(self, field, value):
         """
-        Update a given field in the database.
+        Update transient image metadata.
         """
-        ret = True
-        if self.database:
-            try:
-                cur = self.database.cursor()
-                cur.execute("UPDATE image SET " + field + "='" + value +
-                            "' WHERE id=%s", (self.tag, ))
-                self.database.commit()
-            except BaseException:
-                ret = False
-                traceback.print_exc()
-                self.database.rollback()
-            finally:
-                if cur:
-                    cur.close()
-        return ret
+        firmware_store.update_metadata(self.tag, **{field: value})
+        return True
 
     def get_status(self):
         """
@@ -642,7 +588,7 @@ class ExtractionItem(object):
             if self.get_kernel_status(): return True
             else:
                 if "kernel version" in desc:
-                    self.update_database("kernel_version", desc)
+                    self.update_metadata("kernel_version", desc)
                     if "Linux" in desc:
                         if self.get_kernel_path():
                             shutil.copy(self.item, self.get_kernel_path())
@@ -734,19 +680,6 @@ class ExtractionItem(object):
                         count += 1
         return False
 
-def psql_check(psql_ip):
-    try:
-        import psycopg2
-        psycopg2.connect(database="firmware",
-                         user="firmadyne",
-                         password="firmadyne",
-                         host=psql_ip)
-
-        return True
-
-    except:
-        return False
-
 def main():
     parser = argparse.ArgumentParser(description="Extracts filesystem and \
         kernel from Linux-based firmware images")
@@ -754,7 +687,7 @@ def main():
     parser.add_argument("output", action="store", nargs="?", default="images",
                         help="Output directory for extracted firmware")
     parser.add_argument("-sql ", dest="sql", action="store", default=None,
-                        help="Hostname of SQL server")
+                        help=argparse.SUPPRESS)
     parser.add_argument("-nf", dest="rootfs", action="store_false",
                         default=True, help="Disable extraction of root \
                         filesystem (may decrease extraction time)")
@@ -779,11 +712,10 @@ def main():
         print("[*] Input : %s" % arg.input)
         print("[*] Output: %s" % arg.output)
 
-    if arg.debug or psql_check(arg.sql):
-        extract = Extractor(arg.input,  arg.output,   arg.rootfs,
-                            arg.kernel, arg.parallel, arg.sql,
-                            arg.brand,  arg.debug)
-        extract.extract()
+    extract = Extractor(arg.input,  arg.output,   arg.rootfs,
+                        arg.kernel, arg.parallel, None,
+                        arg.brand,  arg.debug)
+    extract.extract()
 
 if __name__ == "__main__":
     main()

@@ -1,147 +1,99 @@
 #!/usr/bin/env python3
 
-import tarfile
 import getopt
-import sys
-import re
 import hashlib
-import psycopg2
+import json
+import os
+import re
+import sys
+import tarfile
 
-psql_ip = ""
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, os.pardir))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-
-def getFileHashes(infile):
-    t = tarfile.open(infile)
-    files = list()
-    links = list()
-    for f in t.getmembers():
-        if f.isfile():
-            # we use f.name[1:] to get rid of the . at the beginning of the path
-            files.append(
-                (
-                    f.name[1:],
-                    hashlib.md5(t.extractfile(f).read()).hexdigest(),
-                    f.uid,
-                    f.gid,
-                    f.mode,
-                )
-            )
-        elif f.issym():
-            links.append((f.name[1:], f.linkpath))
-    return (files, links)
+from scripts import util
 
 
-def getOids(objs, cur):
-    # hashes ... all the hashes in the tar file
-    hashes = [x[1] for x in objs]
-    hashes_str = ",".join(["""'%s'""" % x for x in hashes])
-    query = """SELECT id,hash FROM object WHERE hash IN (%s)"""
-    cur.execute(query % hashes_str)
-    res = [(int(x), y) for (x, y) in cur.fetchall()]
+def file_hash(tar, member):
+    hasher = hashlib.md5()
+    fp = tar.extractfile(member)
+    if not fp:
+        return None
 
-    existingHashes = [x[1] for x in res]
-
-    missingHashes = set(hashes).difference(set(existingHashes))
-
-    newObjs = createObjects(missingHashes, cur)
-
-    res += newObjs
-
-    result = dict([(y, x) for (x, y) in res])
-    return result
+    while True:
+        buf = fp.read(65536)
+        if not buf:
+            break
+        hasher.update(buf)
+    return hasher.hexdigest()
 
 
-def createObjects(hashes, cur):
-    query = """INSERT INTO object (hash) VALUES (%(hash)s) RETURNING id"""
-    res = list()
-    for h in set(hashes):
-        try:
-            cur.execute(query, {"hash": h})
-            oid = int(cur.fetchone()[0])
-            res.append((oid, h))
-        except:
-            continue
-    return res
-
-
-def insertObjectToImage(iid, files2oids, links, cur):
-    query = """INSERT INTO object_to_image (iid, oid, filename, regular_file, uid, gid, permissions) VALUES (%(iid)s, %(oid)s, %(filename)s, %(regular_file)s, %(uid)s, %(gid)s, %(mode)s)"""
-
-    try:
-        cur.executemany(
-            query,
-            [
-                {
-                    "iid": iid,
-                    "oid": x[1],
-                    "filename": x[0][0],
-                    "regular_file": True,
-                    "uid": x[0][1],
-                    "gid": x[0][2],
-                    "mode": x[0][3],
-                }
-                for x in files2oids
-            ],
-        )
-        cur.executemany(
-            query,
-            [
-                {
-                    "iid": iid,
-                    "oid": 1,
-                    "filename": x[0],
-                    "regular_file": False,
-                    "uid": None,
-                    "gid": None,
-                    "mode": None,
-                }
-                for x in links
-            ],
-        )
-    except:
-        return
+def get_file_hashes(infile):
+    files = []
+    links = []
+    with tarfile.open(infile) as tar:
+        for member in tar.getmembers():
+            name = member.name[1:] if member.name.startswith(".") else member.name
+            if member.isfile():
+                digest = file_hash(tar, member)
+                if digest:
+                    files.append(
+                        {
+                            "filename": name,
+                            "hash": digest,
+                            "uid": member.uid,
+                            "gid": member.gid,
+                            "mode": member.mode,
+                        }
+                    )
+            elif member.issym():
+                links.append({"filename": name, "target": member.linkpath})
+    return files, links
 
 
 def process(iid, infile):
-    global psql_ip
-    dbh = psycopg2.connect(
-        database="firmware", user="firmadyne", password="firmadyne", host=psql_ip
+    files, links = get_file_hashes(infile)
+    scratch_dir = os.path.join(util.SCRATCH_DIR, str(iid))
+    os.makedirs(scratch_dir, exist_ok=True)
+
+    manifest = {
+        "iid": str(iid),
+        "tarball": os.path.abspath(infile),
+        "files": files,
+        "links": links,
+    }
+    manifest_path = os.path.join(scratch_dir, "filesystem.json")
+    with open(manifest_path, "w") as fp:
+        json.dump(manifest, fp, indent=2, sort_keys=True)
+        fp.write("\n")
+
+    util.update_metadata(
+        iid,
+        filesystem_manifest=manifest_path,
+        filesystem_file_count=len(files),
+        filesystem_link_count=len(links),
     )
-    cur = dbh.cursor()
-
-    (files, links) = getFileHashes(infile)
-
-    oids = getOids(files, cur)
-
-    fdict = dict(
-        [(h, (filename, uid, gid, mode)) for (filename, h, uid, gid, mode) in files]
-    )
-
-    file2oid = [(fdict[h], oid) for (h, oid) in oids.items()]
-
-    insertObjectToImage(iid, file2oid, links, cur)
-
-    dbh.commit()
-
-    dbh.close()
 
 
 def main():
-    global psql_ip
     infile = iid = None
-    opts, argv = getopt.getopt(sys.argv[1:], "f:i:h:")
+    opts, _argv = getopt.getopt(sys.argv[1:], "f:i:h:")
     for k, v in opts:
         if k == "-i":
             iid = int(v)
         if k == "-f":
             infile = v
-        if k == "-h":
-            psql_ip = v
 
     if infile and not iid:
         m = re.search(r"(\d+)\.tar\.gz", infile)
         if m:
-            iid = int(m.groups(1))
+            iid = int(m.group(1))
+
+    if not infile or not iid:
+        print("Usage: tar2db.py -i <image ID> -f <rootfs tarball>", file=sys.stderr)
+        exit(1)
 
     process(iid, infile)
 

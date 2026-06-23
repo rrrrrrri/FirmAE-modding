@@ -1,0 +1,16 @@
+.git
+.DS_Store
+**/.DS_Store
+images/
+scratch/
+firmwares/*
+!firmwares/README.md
+result.txt
+binwalk-*/
+analyses/
+database/
+sources/scraper/
+scripts/injectionChecker.sh
+__pycache__/
+*/__pycache__/
+*.pyc

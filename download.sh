@@ -2,55 +2,68 @@
 
 set -e
 
-download(){
-  wget -N -P./binaries/ "$1"
+check_local_binary()
+{
+  binary_path="./binaries/${1}"
+  if [ ! -s "${binary_path}" ]; then
+    echo "Missing local binary: ${binary_path}" >&2
+    return 1
+  fi
 }
 
-echo "Downloading binaries..."
+check_local_kernel()
+{
+  kernel_path="./binaries/${1}"
+  if [ ! -f "${kernel_path}" ]; then
+    echo "Missing local kernel binary: ${kernel_path}" >&2
+    return 1
+  fi
 
-echo "Downloading kernel 2.6 (MIPS)..."
-download https://github.com/pr0v3rbs/FirmAE_kernel-v2.6/releases/download/v1.0/vmlinux.mipsel.2
-download https://github.com/pr0v3rbs/FirmAE_kernel-v2.6/releases/download/v1.0/vmlinux.mipseb.2
+  kernel_size=$(wc -c < "${kernel_path}")
+  if [ "${kernel_size}" -lt 1048576 ]; then
+    echo "Local kernel binary looks incomplete: ${kernel_path} (${kernel_size} bytes)" >&2
+    return 1
+  fi
+}
 
-echo "Downloading kernel 4.1 (MIPS)..."
-download https://github.com/pr0v3rbs/FirmAE_kernel-v4.1/releases/download/v1.0/vmlinux.mipsel.4
-download https://github.com/pr0v3rbs/FirmAE_kernel-v4.1/releases/download/v1.0/vmlinux.mipseb.4
+check_local_tar_gz()
+{
+  archive_path="./binaries/${1}"
+  check_local_binary "${1}" || return 1
 
-echo "Downloading kernel 4.1 (ARM)..."
-download https://github.com/pr0v3rbs/FirmAE_kernel-v4.1/releases/download/v1.0/zImage.armel
-download https://github.com/pr0v3rbs/FirmAE_kernel-v4.1/releases/download/v1.0/vmlinux.armel
+  if ! tar -tzf "${archive_path}" >/dev/null; then
+    echo "Local archive looks incomplete or invalid: ${archive_path}" >&2
+    return 1
+  fi
+}
 
-echo "Downloading busybox..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/busybox.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/busybox.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/busybox.mipsel
+echo "Checking local binaries..."
+missing_binary=false
 
-echo "Downloading console..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/console.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/console.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/console.mipsel
+for kernel in \
+  vmlinux.mipsel.2 vmlinux.mipseb.2 vmlinux.mipsel.4 vmlinux.mipseb.4 \
+  zImage.armel vmlinux.armel
+do
+  check_local_kernel "${kernel}" || missing_binary=true
+done
 
-echo "Downloading libnvram..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram.so.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram.so.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram.so.mipsel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram_ioctl.so.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram_ioctl.so.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/libnvram_ioctl.so.mipsel
+for binary in \
+  binwalk-2.3.4.tar.gz \
+  busybox.armel busybox.mipseb busybox.mipsel \
+  console.armel console.mipseb console.mipsel \
+  libnvram.so.armel libnvram.so.mipseb libnvram.so.mipsel \
+  libnvram_ioctl.so.armel libnvram_ioctl.so.mipseb libnvram_ioctl.so.mipsel \
+  gdb.armel gdb.mipseb gdb.mipsel \
+  gdbserver.armel gdbserver.mipseb gdbserver.mipsel \
+  strace.armel strace.mipseb strace.mipsel
+do
+  check_local_binary "${binary}" || missing_binary=true
+done
 
-echo "Downloading gdb..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdb.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdb.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdb.mipsel
+check_local_tar_gz binwalk-2.3.4.tar.gz || missing_binary=true
 
-echo "Downloading gdbserver..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdbserver.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdbserver.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/gdbserver.mipsel
+if [ "${missing_binary}" = "true" ]; then
+  exit 1
+fi
 
-echo "Downloading strace..."
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/strace.armel
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/strace.mipseb
-download https://github.com/pr0v3rbs/FirmAE/releases/download/v1.0/strace.mipsel
-
-echo "Done!"
+echo "All required local binaries are present."

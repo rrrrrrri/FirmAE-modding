@@ -116,15 +116,13 @@ mknod -m 666 "${IMAGE_DIR}/firmadyne/ttyS1" c 4 65
 
 cp "${SCRIPT_DIR}/preInit.sh" "${IMAGE_DIR}/firmadyne/preInit.sh"
 chmod a+x "${IMAGE_DIR}/firmadyne/preInit.sh"
+echo "${FIRMAE_ASLR}" > "${IMAGE_DIR}/firmadyne/aslr"
 
 cp "${SCRIPT_DIR}/network.sh" "${IMAGE_DIR}/firmadyne/network.sh"
 chmod a+x "${IMAGE_DIR}/firmadyne/network.sh"
 
 cp "${SCRIPT_DIR}/run_service.sh" "${IMAGE_DIR}/firmadyne/run_service.sh"
 chmod a+x "${IMAGE_DIR}/firmadyne/run_service.sh"
-
-cp "${SCRIPT_DIR}/injectionChecker.sh" "${IMAGE_DIR}/bin/a"
-chmod a+x "${IMAGE_DIR}/bin/a"
 
 touch "${IMAGE_DIR}/firmadyne/debug.sh"
 chmod a+x "${IMAGE_DIR}/firmadyne/debug.sh"

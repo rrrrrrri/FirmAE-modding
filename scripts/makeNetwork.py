@@ -65,8 +65,18 @@ mount ${DEVICE} ${WORK_DIR}/image > /dev/null
 echo "%(NETWORK_TYPE)s" > ${WORK_DIR}/image/firmadyne/network_type
 echo "%(NET_BRIDGE)s" > ${WORK_DIR}/image/firmadyne/net_bridge
 echo "%(NET_INTERFACE)s" > ${WORK_DIR}/image/firmadyne/net_interface
+echo "${FIRMAE_ASLR}" > ${WORK_DIR}/image/firmadyne/aslr
 
 echo "#!/firmadyne/sh" > ${WORK_DIR}/image/firmadyne/debug.sh
+echo "BUSYBOX=/firmadyne/busybox" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "FIRMAE_ASLR=\\`\\${BUSYBOX} cat /firmadyne/aslr 2>/dev/null || \\${BUSYBOX} echo false\\`" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "if [ -e /proc/sys/kernel/randomize_va_space ]; then" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "    if [ \\"\\${FIRMAE_ASLR}\\" = \\"true\\" ] || [ \\"\\${FIRMAE_ASLR}\\" = \\"1\\" ] || [ \\"\\${FIRMAE_ASLR}\\" = \\"yes\\" ]; then" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "        \\${BUSYBOX} echo 1 > /proc/sys/kernel/randomize_va_space 2>/dev/null || true" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "    else" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "        \\${BUSYBOX} echo 0 > /proc/sys/kernel/randomize_va_space 2>/dev/null || true" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "    fi" >> ${WORK_DIR}/image/firmadyne/debug.sh
+echo "fi" >> ${WORK_DIR}/image/firmadyne/debug.sh
 if (echo ${RUN_MODE} | grep -q "debug"); then
     echo "while (true); do /firmadyne/busybox nc -lp 31337 -e /firmadyne/sh; done &" >> ${WORK_DIR}/image/firmadyne/debug.sh
     echo "/firmadyne/busybox telnetd -p 31338 -l /firmadyne/sh" >> ${WORK_DIR}/image/firmadyne/debug.sh

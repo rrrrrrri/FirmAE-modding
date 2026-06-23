@@ -14,7 +14,6 @@ sufficient UNIX-like root directories (e.g. `/bin`, `/etc/`, etc.)
 Dependencies
 ============
 * [fakeroot](https://fakeroot.alioth.debian.org)
-* [psycopg2](http://initd.org/psycopg/)
 * [binwalk](https://github.com/devttys0/binwalk)
 * [python-magic](https://github.com/ahupp/python-magic)
 

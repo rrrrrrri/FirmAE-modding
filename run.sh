@@ -6,7 +6,6 @@ function print_usage()
     echo "mode: use one option at once"
     echo "      -r, --run     : run mode         - run emulation (no quit)"
     echo "      -c, --check   : check mode       - check network reachable and web access (quit)"
-    echo "      -a, --analyze : analyze mode     - analyze vulnerability (quit)"
     echo "      -d, --debug   : debug mode       - debugging emulation (no quit)"
     echo "      -b, --boot    : boot debug mode  - kernel boot debugging using QEMU (no quit)"
 }
@@ -33,8 +32,6 @@ function get_option()
     OPTION=${1}
     if [ ${OPTION} = "-c" ] || [ ${OPTION} = "--check" ]; then
         echo "check"
-    elif [ ${OPTION} = "-a" ] || [ ${OPTION} = "--analyze" ]; then
-        echo "analyze"
     elif [ ${OPTION} = "-r" ] || [ ${OPTION} = "--run" ]; then
         echo "run"
     elif [ ${OPTION} = "-d" ] || [ ${OPTION} = "--debug" ]; then
@@ -49,11 +46,11 @@ function get_option()
 function get_brand()
 {
   INFILE=${1}
-  BRAND=${2}
-  if [ ${BRAND} = "auto" ]; then
-    echo `./scripts/util.py get_brand ${INFILE} ${PSQL_IP}`
+  BRAND=${2:-}
+  if [ "${BRAND}" = "auto" ]; then
+    echo `./scripts/util.py get_brand "${INFILE}"`
   else
-    echo ${2}
+    echo "${BRAND}"
   fi
 }
 
@@ -76,7 +73,7 @@ function run_emulation()
 {
     echo "[*] ${1} emulation start!!!"
     INFILE=${1}
-    BRAND=`get_brand ${INFILE} ${BRAND}`
+    BRAND=`get_brand "${INFILE}" "${BRAND}"`
     FILENAME=`basename ${INFILE%.*}`
     PING_RESULT=false
     WEB_RESULT=false
@@ -85,13 +82,6 @@ function run_emulation()
     if [ "${BRAND}" = "auto" ]; then
       echo -e "[\033[31m-\033[0m] Invalid brand ${INFILE}"
       return
-    fi
-
-    if [ -n "${FIRMAE_DOCKER-}" ]; then
-      if ( ! ./scripts/util.py check_connection _ $PSQL_IP ); then
-        echo -e "[\033[31m-\033[0m] docker container failed to connect to the hosts' postgresql!"
-        return
-      fi
     fi
 
     # Omit the argument '-b' when $BRAND is empty.
@@ -105,10 +95,10 @@ function run_emulation()
     # If the brand is not specified in the argument, it will be inferred 
     # automatically from the path of the image file.
     timeout --preserve-status --signal SIGINT 300 \
-        ./sources/extractor/extractor.py $brand_arg -sql $PSQL_IP -np \
+        ./sources/extractor/extractor.py $brand_arg -np \
         -nk $INFILE images 2>&1 >/dev/null
 
-    IID=`./scripts/util.py get_iid $INFILE $PSQL_IP`
+    IID=`./scripts/util.py get_iid $INFILE`
     if [ ! "${IID}" ]; then
         echo -e "[\033[31m-\033[0m] extractor.py failed!"
         return
@@ -120,7 +110,7 @@ function run_emulation()
     # If the brand is not specified in the argument, it will be inferred 
     # automatically from the path of the image file.
     timeout --preserve-status --signal SIGINT 300 \
-        ./sources/extractor/extractor.py $brand_arg -sql $PSQL_IP -np \
+        ./sources/extractor/extractor.py $brand_arg -np \
         -nf $INFILE images 2>&1 >/dev/null
 
     WORK_DIR=`get_scratch ${IID}`
@@ -153,7 +143,7 @@ function run_emulation()
     # check architecture
     # ================================
     t_start="$(date -u +%s.%N)"
-    ARCH=`./scripts/getArch.py ./images/$IID.tar.gz $PSQL_IP`
+    ARCH=`./scripts/getArch.py ./images/$IID.tar.gz`
     echo "${ARCH}" > "${WORK_DIR}/architecture"
 
     if [ -e ./images/${IID}.kernel ]; then
@@ -183,7 +173,7 @@ function run_emulation()
         # make qemu image
         # ================================
         t_start="$(date -u +%s.%N)"
-        python3 -u ./scripts/tar2db.py -i $IID -f ./images/$IID.tar.gz -h $PSQL_IP \
+        python3 -u ./scripts/tar2db.py -i $IID -f ./images/$IID.tar.gz \
             2>&1 > ${WORK_DIR}/tar2db.log
         t_end="$(date -u +%s.%N)"
         time_tar="$(bc <<<"$t_end-$t_start")"
@@ -207,7 +197,6 @@ function run_emulation()
           python3 -u ./scripts/makeNetwork.py -i $IID -q -o -a ${ARCH} \
           2>&1 > ${WORK_DIR}/makeNetwork.log
         ln -s ./run.sh ${WORK_DIR}/run_debug.sh | true
-        ln -s ./run.sh ${WORK_DIR}/run_analyze.sh | true
         ln -s ./run.sh ${WORK_DIR}/run_boot.sh | true
 
         t_end="$(date -u +%s.%N)"
@@ -235,33 +224,7 @@ function run_emulation()
         echo false > ${WORK_DIR}/result
     fi
 
-    if [ ${OPTION} = "analyze" ]; then
-        # ================================
-        # analyze firmware (check vulnerability)
-        # ================================
-        t_start="$(date -u +%s.%N)"
-        if ($WEB_RESULT); then
-            echo "[*] Waiting web service..."
-            ${WORK_DIR}/run_analyze.sh &
-            IP=`cat ${WORK_DIR}/ip`
-            check_network ${IP} false
-
-            echo -e "[\033[32m+\033[0m] start pentest!"
-            cd analyses
-            ./analyses_all.sh $IID $BRAND $IP $PSQL_IP
-            cd -
-
-            sync
-            kill $(ps aux | grep `get_qemu ${ARCH}` | awk '{print $2}') 2> /dev/null
-            sleep 2
-        else
-            echo -e "[\033[31m-\033[0m] Web unreachable"
-        fi
-        t_end="$(date -u +%s.%N)"
-        time_analyze="$(bc <<<"$t_end-$t_start")"
-        echo $time_analyze > ${WORK_DIR}/time_analyze
-
-    elif [ ${OPTION} = "debug" ]; then
+    if [ ${OPTION} = "debug" ]; then
         # ================================
         # run debug mode.
         # ================================
@@ -277,7 +240,12 @@ function run_emulation()
             check_network ${IP} true
 
             sleep 10
-            ./debug.py ${IID}
+            if [ "${FIRMAE_NONINTERACTIVE_DEBUG:-false}" = "true" ] || [ ! -t 0 ]; then
+                echo "[*] Debug shell is enabled on ${IP}:31337 (netcat) and ${IP}:31338 (telnet)."
+                wait
+            else
+                ./debug.py ${IID}
+            fi
 
             sync
             kill $(ps aux | grep `get_qemu ${ARCH}` | awk '{print $2}') 2> /dev/null | true
